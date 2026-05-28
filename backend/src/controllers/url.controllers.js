@@ -3,6 +3,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { apiError } from '../utils/apiError.js';
 import generateShortCode from '../utils/generateShortCode.js';
+import redis from '../config/redis.js';
 
 const createShortCode = asyncHandler(async(req, res) => {
     const { originalUrl } = req.body;
@@ -25,6 +26,15 @@ const redirectToOriginalUrl = asyncHandler(async(req, res) => {
     if(!shortCode) {
         throw new apiError(400, 'Short code is required');
     }
+    const cacheKey = `url:${shortCode}`;
+    const clickKey = `clicks:${shortCode}`;
+    const cachedUrl = await redis.get(cacheKey);
+    if(cachedUrl) {
+        console.log('Cache hit for short code:', shortCode);
+        await redis.incr(clickKey);
+        return res.redirect(cachedUrl);
+    }
+    console.log('Cache miss for short code:', shortCode);
     const url = await URL.findOne({ shortCode });
     if(!url) {
         throw new apiError(404, 'Short URL not found');
@@ -32,12 +42,9 @@ const redirectToOriginalUrl = asyncHandler(async(req, res) => {
     if(url.expiresAt < new Date()) {
         throw new apiError(410, 'Short URL has expired');
     }
-    await URL.findOneAndUpdate(
-        { shortCode },
-        {
-            $inc: { clicks: 1 }
-        }
-    );
+    await redis.set(cacheKey, url.originalUrl, 'EX', 60 * 60 * 24);
+    await redis.set(clickKey, url.clicks || 0);
+    await redis.incr(clickKey);
     return res.redirect(url.originalUrl);
 });
 
