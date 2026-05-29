@@ -4,6 +4,7 @@ import { apiResponse } from '../utils/apiResponse.js';
 import { apiError } from '../utils/apiError.js';
 import generateShortCode from '../utils/generateShortCode.js';
 import redis from '../config/redis.js';
+import { addAnalyticsJob } from '../jobs/analytics.job.js';
 
 const createShortCode = asyncHandler(async(req, res) => {
     const { originalUrl } = req.body;
@@ -31,7 +32,11 @@ const redirectToOriginalUrl = asyncHandler(async(req, res) => {
     const cachedUrl = await redis.get(cacheKey);
     if(cachedUrl) {
         console.log('Cache hit for short code:', shortCode);
-        await redis.incr(clickKey);
+        redis.incr(clickKey);
+        addAnalyticsJob({
+            shortCode,
+            timestamp: new Date().toISOString()
+        });
         return res.redirect(cachedUrl);
     }
     console.log('Cache miss for short code:', shortCode);
@@ -43,8 +48,12 @@ const redirectToOriginalUrl = asyncHandler(async(req, res) => {
         throw new apiError(410, 'Short URL has expired');
     }
     await redis.set(cacheKey, url.originalUrl, 'EX', 60 * 60 * 24);
-    await redis.set(clickKey, url.clicks || 0);
-    await redis.incr(clickKey);
+    await redis.setnx(clickKey, url.clicks || 0);
+    redis.incr(clickKey);
+    addAnalyticsJob({
+        shortCode,
+        timestamp: new Date().toISOString()
+    });
     return res.redirect(url.originalUrl);
 });
 
