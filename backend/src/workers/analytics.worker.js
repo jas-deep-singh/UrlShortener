@@ -13,24 +13,29 @@ connectDB();
 const analyticsWorker = new Worker(
     'analyticsQueue',
     async(job) => {
-        const { shortCode } = job.data;
-        console.log(`Processing job for shortcode: ${shortCode}`);
-        const clickKey = `clicks:${shortCode}`;
-        const clicks = await redis.get(clickKey);
-        if(!clicks) {
-            console.log(`No clicks found for shortcode: ${shortCode}`);
-            return;
-        }
-        const clickCount = Number(clicks);
-        await URL.updateOne(
-            { shortCode },
-            { $inc: 
-                { clicks: clickCount } 
+        if(job.name === 'sync-clicks') {
+            console.log('Starting batch flush of click counts at', new Date().toISOString());
+            const bulkOps = [];
+            const keys = await redis.keys('clicks:*');
+            for(const key of keys) {
+                const shortCode = key.split(':')[1];
+                const count = await redis.get(key);
+                if(Number(count)>0) {
+                    bulkOps.push({
+                        updateOne: {
+                            filter: { shortCode },
+                            update: { $inc: { clicks: Number(count) } }
+                        }
+                    });
+                    console.log(`Flushing ${count} clicks for short code ${shortCode}`);
+                    await redis.del(key);
+                }
             }
-        );
-        console.log(`MongoDb clicks updated for ${shortCode} with ${clickCount}`);
-        await redis.del(clickKey);
-        console.log(`Redis click key deleted for ${shortCode}`);
+            if(bulkOps.length > 0) {
+                await URL.bulkWrite(bulkOps);
+            }
+            console.log('Batch flush completed at', new Date().toISOString());
+        }
     },
     {
         connection
